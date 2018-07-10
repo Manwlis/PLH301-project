@@ -55,8 +55,10 @@ typedef struct process_control_block {
 
   FCB* FIDT[MAX_FILEID];  /**< The fileid table of the process */
 
-} PCB;
+  rlnode PTCB_list;       /**< List of PTCBs*****************************************************************************************************************************/
+  int thread_count; //Posa thread exei to process.
 
+} PCB;
 
 /**
   @brief Initialize the process table.

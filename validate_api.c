@@ -947,7 +947,7 @@ BOOT_TEST(test_exit_many_threads,
 {
 
 	int task(int argl, void* args) {
-		fibo(45);
+		fibo(30);
 		return 2;
 	}
 
@@ -955,7 +955,7 @@ BOOT_TEST(test_exit_many_threads,
 		for(int i=0;i<5;i++)
 			ASSERT(CreateThread(task, 0, NULL) != NOTHREAD);
 
-		fibo(35);
+		fibo(30);
 		return 0;
 	}
 
@@ -1230,7 +1230,7 @@ void connect_sockets(Fid_t sock1, Fid_t lsock, Fid_t* sock2, port_t port)
 		return 0;
 	}
 	int connect_thread(int argl, void* args) {
-		ASSERT(Connect(sock1, port, 1000)==0);
+		ASSERT(Connect(sock1, port, 1000) == 0);
 		return 0;
 	}
 
@@ -1464,7 +1464,7 @@ BOOT_TEST(test_accept_unblocks_on_close,
 	Tid_t t = CreateThread(accept_connection, 0, NULL);
 
 	/* Here, we just wait some time, (of course, this is technically a race condition :-( */
-	fibo(30);
+	fibo(15);
 	Close(lsock);
 
 	ThreadJoin(t,NULL);
@@ -1741,8 +1741,8 @@ TEST_SUITE(socket_tests,
 	&test_listen_success,
 	&test_listen_fails_on_bad_fid,
 	&test_listen_fails_on_NOPORT,
-	&test_listen_fails_on_occupied_port,
-	&test_listen_fails_on_initialized_socket,
+	&test_listen_fails_on_occupied_port, // 8elei close
+	&test_listen_fails_on_initialized_socket,//8elei na ginei connection
 
 	&test_accept_succeds,
 	&test_accept_fails_on_bad_fid,

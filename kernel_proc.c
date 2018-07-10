@@ -1,4 +1,3 @@
-
 #include <assert.h>
 #include "kernel_cc.h"
 #include "kernel_proc.h"
@@ -44,6 +43,10 @@ static inline void initialize_PCB(PCB* pcb)
   rlnode_init(& pcb->children_node, pcb);
   rlnode_init(& pcb->exited_node, pcb);
   pcb->child_exit = COND_INIT;
+
+  pcb->thread_count = 0;
+  rlnode_init(& pcb->PTCB_list, NULL);
+
 }
 
 
@@ -178,7 +181,14 @@ Pid_t sys_Exec(Task call, int argl, void* args)
     the initialization of the PCB.
    */
   if(call != NULL) {
+
+    //dhmiourgia main thread
+    newproc->thread_count++;
     newproc->main_thread = spawn_thread(newproc, start_main_thread);
+
+    //Deixnoume oti to main thread einai ksexwristo giati den exei ptcb.
+    newproc->main_thread->owner_ptcb = NULL;
+    
     wakeup(newproc->main_thread);
   }
 
@@ -334,14 +344,112 @@ void sys_Exit(int exitval)
   curproc->pstate = ZOMBIE;
   curproc->exitval = exitval;
 
+  /* Free remaining PTCBs */
+  rlnode* sel;
+  while(! is_rlist_empty(& (curproc->PTCB_list))){
+    sel = rlist_pop_front(&(curproc->PTCB_list));
+    free(sel->ptcb);
+  }
   /* Bye-bye cruel world */
+  curproc->thread_count--;
   kernel_sleep(EXITED, SCHED_USER);
 }
 
 
 
-Fid_t sys_OpenInfo()
+  /************** Process Info ****************/
+
+
+//  Koitame ta pcb akribws prin ta emfanisoume gia na einai oso pio prosfata ginetai.
+int procinfo_read(void* procinfo_obj, char* buf, unsigned int size)
 {
-	return NOFILE;
+  procinfo_CB* pi_CB = (procinfo_CB*) procinfo_obj;
+
+  // Check process table. Take info from all no free positions.
+  while(1){
+    if(PT[pi_CB->count].pstate != FREE){
+
+      // Allocate space for procinfos.
+      pi_CB->data = (procinfo*) xmalloc(sizeof(procinfo));
+
+      // Save process' variables.
+      pi_CB->data->pid = get_pid(& PT[pi_CB->count]);
+      pi_CB->data->ppid = get_pid(PT[pi_CB->count].parent);
+
+      pi_CB->data->alive = (PT[pi_CB->count].pstate == ALIVE)? 1: 0;
+
+      pi_CB->data->thread_count = PT[pi_CB->count].thread_count;
+      pi_CB->data->main_task = PT[pi_CB->count].main_task;
+
+      pi_CB->data->argl = PT[pi_CB->count].argl;
+
+      // Check that argl max size = 128 byte. Keep the first 128 if bigger.
+      if(PT[pi_CB->count].argl > PROCINFO_MAX_ARGS_SIZE) 
+        memcpy(pi_CB->data->args, PT[pi_CB->count].args, PROCINFO_MAX_ARGS_SIZE);
+      else
+        memcpy(pi_CB->data->args, PT[pi_CB->count].args, PT[pi_CB->count].argl);
+
+      // Next PCB.
+      pi_CB->count++;
+
+      // Remove a procinfo and copy it to the buf.
+      memcpy(buf, pi_CB->data, size);
+
+      // Clear space. They are not needed after one use.
+      free(pi_CB->data);
+
+      break;
+    }
+
+    // Next PCB.
+    pi_CB->count++;
+
+    // Return 0 when we looked the whole PT. 
+    if(pi_CB->count == MAX_PROC - 1){
+      return 0;
+    }
+  }
+
+  return size;
 }
 
+
+int procinfo_close(void* procinfo_obj)
+{
+  procinfo_CB* pi_CB = (procinfo_CB*) procinfo_obj;
+  
+  free(pi_CB);
+
+  return 0;
+}
+
+
+static file_ops procinfo_ops = {
+  .Open = NULL,
+  .Read = procinfo_read,
+  .Write = NULL,
+  .Close = procinfo_close
+};
+
+
+Fid_t sys_OpenInfo()
+{
+
+  // Reserve FCB
+  Fid_t fid = 0;
+  FCB* fcb = NULL;
+  if(!FCB_reserve(1, &fid, &fcb))
+    return NOFILE;
+
+  // Allocate space for piCB.
+  procinfo_CB* pi_CB = (procinfo_CB*) xmalloc(sizeof(procinfo_CB));
+
+  // Gemisma fcb.
+  fcb->streamobj = pi_CB;
+  fcb->streamfunc = &procinfo_ops;
+
+  // Ksekiname apo to init.
+  pi_CB->count = 1;
+
+  return fid;
+}

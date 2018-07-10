@@ -52,7 +52,11 @@ int FCB_decref(FCB* fcb)
   assert(fcb);
   fcb->refcount --;
   if(fcb->refcount==0) {
+    
+    //klish eidikwn close,
+    //An ta paidia exoun klironomisei to pipe prepei na to cleisoun kai auta gia na diagraftei.
     int retval = fcb->streamfunc->Close(fcb->streamobj);
+
     release_FCB(fcb);
     return retval;
   }
@@ -192,16 +196,18 @@ int sys_Write(Fid_t fd, const char *buf, unsigned int size)
   return retcode;
 }
 
-
+//kaloume eidika close*******************************************************************************************
 int sys_Close(int fd)
 {
   int retcode = (fd>=0 && fd<MAX_FILEID) ? 0 : -1;  /* Closing a closed fd is legal! */
 
   FCB* fcb = get_fcb(fd);
 
-  if(fcb) {
+  if(fcb) {   
+
     CURPROC->FIDT[fd] = NULL;
     retcode = FCB_decref(fcb);    
+
   }
 
   return retcode;

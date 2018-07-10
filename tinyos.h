@@ -4,6 +4,8 @@
 
 #include <stdint.h>
 
+#include "kernel_dev.h"
+
 /**
   @file tinyos.h
   @brief Public kernel API
@@ -495,6 +497,7 @@ int Dup2(Fid_t oldfd, Fid_t newfd);
  *
  *******************************************/
 
+#define BUFFER_SIZE 8000 // 8 KBytes
 
 /**
 	@brief A pair of file ids, describing a pipe.
@@ -508,8 +511,30 @@ int Dup2(Fid_t oldfd, Fid_t newfd);
 typedef struct pipe_s {
 	Fid_t read;			/**< The read end of the pipe */
 	Fid_t write;		/**< The write end of the pipe */
+
 } pipe_t;
 
+typedef struct pipe_Control_Block{
+
+
+  int reader_closed;
+  int writer_closed;
+
+  char buffer[BUFFER_SIZE];
+  int bufferElementsCount;    /**< Metrame posa stoixeia exei o buffer gia na kseroume an einai adeios h gematos */
+
+  int last_read_pos;
+  int last_write_pos;
+
+  CondVar cv_readers; 
+  CondVar cv_writers; 
+
+  /* Ari8mos twn thread pou koimountai sto antistoixo cv. 
+  Prepei na mhdenistoun gia na kleisei h ka8e pleura kai na geinei free.*/
+  int ref_count_reader;
+  int ref_count_writer;
+
+}pipe_CB;
 
 /**
 	@brief Construct and return a pipe.
@@ -529,7 +554,17 @@ typedef struct pipe_s {
 	@returns 0 on success, or -1 on error. Possible reasons for error:
 		- the available file ids for the process are exhausted.
 */
-int Pipe(pipe_t* pipe);
+int Pipe(pipe_t* pipe_str);
+
+void create_pipe(FCB** pipe_FCBs);
+
+int pipe_read(void* pipe_obj, char *buf, unsigned int size);
+
+int pipe_reader_close(void* pipe_obj);
+
+int pipe_write(void* pipe_obj, const char *buf, unsigned int size);
+
+int pipe_writer_close(void* pipe_obj);
 
 /*******************************************
  *
@@ -566,7 +601,7 @@ typedef int16_t port_t;
 	@param port the port the new socket will be bound to
 	@returns a file id for the new socket, or NOFILE on error. Possible
 		reasons for error:
-		- the port is iilegal
+		- the port is ilegal
 		- the available file ids for the process are exhausted
 */
 Fid_t Socket(port_t port);
@@ -736,8 +771,18 @@ typedef struct procinfo
 
     If the task's argument is longer (as designated by the @c argl field), the
     bytes contained in this field are just the prefix.  */
+
 } procinfo;
 
+
+// Used to save procinfos in a list.
+typedef struct process_info_Control_Block{
+
+    procinfo* data;
+
+    int count;
+
+}procinfo_CB;
 
 /**
 	@brief Open a kernel information stream.
@@ -759,7 +804,8 @@ typedef struct procinfo
  */
 Fid_t OpenInfo();
 
-
+int procinfo_close(void* procinfo_obj);
+int procinfo_read(void* procinfo_obj, char* buf, unsigned int size);
 
 
 /*******************************************

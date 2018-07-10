@@ -79,6 +79,12 @@ enum SCHED_CAUSE {
 
 
 
+#define MAX_CONGESTION 25
+
+#define PRIORITY_LISTS 10
+#define TOP_PRIORITY (PRIORITY_LISTS - 1)
+#define LOWEST_PRIORITY 0
+
 /**
   @brief The thread control block
 
@@ -87,28 +93,32 @@ enum SCHED_CAUSE {
 */
 typedef struct thread_control_block
 {
-  PCB* owner_pcb;       /**< This is null for a free TCB */
-
-  cpu_context_t context;     /**< The thread context */
+  PCB* owner_pcb;                      /**< This is null for a free TCB */
+  PTCB* owner_ptcb;                    /**< This is null for the main thread */
+  cpu_context_t context;               /**< The thread context */
 
 #ifndef NVALGRIND
-  unsigned valgrind_stack_id; /**< This is useful in order to register the thread stack to valgrind */
+  unsigned valgrind_stack_id;          /**< This is useful in order to register the thread stack to valgrind */
 #endif
 
-  Thread_type type;       /**< The type of thread */
-  Thread_state state;    /**< The state of the thread */
-  Thread_phase phase;    /**< The phase of the thread */
+  Thread_type type;                    /**< The type of thread */
+  Thread_state state;                  /**< The state of the thread */
+  Thread_phase phase;                  /**< The phase of the thread */
 
-  void (*thread_func)();   /**< The function executed by this thread */
+  void (*thread_func)();               /**< The function executed by this thread */
 
-  TimerDuration wakeup_time; /**< The time this thread will be woken up by the scheduler */
-  rlnode sched_node;      /**< node to use when queueing in the scheduler lists */
+  TimerDuration wakeup_time;           /**< The time this thread will be woken up by the scheduler */
+  rlnode sched_node;                   /**< node to use when queueing in the scheduler lists */
 
   struct thread_control_block * prev;  /**< previous context */
   struct thread_control_block * next;  /**< next context */
   
-} TCB;
+  int priority;
 
+  /* Metablhtes pou xrishmopoiountai gia epanafora ths proteraiothtas kata to priority inversion */
+  int prev_queue;
+  int mutex_flag;
+} TCB;
 
 
 /** Thread stack size */
@@ -246,6 +256,8 @@ void run_scheduler(void);
 void initialize_scheduler(void); 
 
 
+void boost(); /**/
+
 /**
   @brief Quantum (in microseconds) 
 
@@ -256,4 +268,3 @@ void initialize_scheduler(void);
 /** @} */
 
 #endif
-

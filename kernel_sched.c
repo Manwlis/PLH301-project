@@ -6,6 +6,8 @@
 #include "kernel_cc.h"
 #include "kernel_sched.h"
 #include "kernel_proc.h"
+#include "kernel_threads.h"
+
 
 #ifndef NVALGRIND
 #include <valgrind/valgrind.h>
@@ -55,6 +57,7 @@ Mutex active_threads_spinlock = MUTEX_INIT;
 
 #define THREAD_SIZE  (THREAD_TCB_SIZE+THREAD_STACK_SIZE)
 
+int fail_safe = 0;
 //#define MMAPPED_THREAD_MEM 
 #ifdef MMAPPED_THREAD_MEM 
 
@@ -98,11 +101,9 @@ void* allocate_thread(size_t size)
 #endif
 
 
-
 /*
   This is the function that is used to start normal threads.
 */
-
 void gain(int preempt); /* forward */
 
 static void thread_start()
@@ -118,14 +119,14 @@ static void thread_start()
 /*
   Initialize and return a new TCB
 */
-
-TCB* spawn_thread(PCB* pcb, void (*func)())
+TCB* spawn_thread(PCB* pcb, void (*func)())  
 {
   /* The allocated thread size must be a multiple of page size */
   TCB* tcb = (TCB*) allocate_thread(THREAD_SIZE);
 
   /* Set the owner */
   tcb->owner_pcb = pcb;
+  //ptcb init
 
   /* Initialize the other attributes */
   tcb->type = NORMAL_THREAD;
@@ -133,8 +134,15 @@ TCB* spawn_thread(PCB* pcb, void (*func)())
   tcb->phase = CTX_CLEAN;
   tcb->thread_func = func;
   tcb->wakeup_time = NO_TIMEOUT;
-  rlnode_init(& tcb->sched_node, tcb);  /* Intrusive list node */
 
+  /* Init priority sth prwth lista. */
+  tcb->priority = TOP_PRIORITY;
+
+  /* Init tis metablhtes gia to mutex inversion */
+  tcb->mutex_flag = 0;
+  tcb->prev_queue = TOP_PRIORITY;
+
+  rlnode_init(& tcb->sched_node, tcb);  /* Intrusive list node */
 
   /* Compute the stack segment address and size */
   void* sp = ((void*)tcb) + THREAD_TCB_SIZE;
@@ -192,7 +200,7 @@ CCB cctx[MAX_CORES];
 /*
   The scheduler queue is implemented as a doubly linked list. The
   head and tail of this list are stored in  SCHED.
-	
+  
   Also, the scheduler contains a linked list of all the sleeping
   threads with a timeout.
 
@@ -200,9 +208,11 @@ CCB cctx[MAX_CORES];
 */
 
 
-rlnode SCHED;                         /* The scheduler queue */
-rlnode TIMEOUT_LIST;				  /* The list of threads with a timeout */
+rlnode SCHED[PRIORITY_LISTS];         /* The scheduler queue */ 
+rlnode TIMEOUT_LIST;                  /* The list of threads with a timeout */
 Mutex sched_spinlock = MUTEX_INIT;    /* spinlock for scheduler queue */
+
+int counter_congestion = 0;            /* Counter gia thn sumforish tou sceduler */
 
 
 
@@ -228,17 +238,17 @@ static void sched_register_timeout(TCB* tcb, TimerDuration timeout)
 {
   if(timeout!=NO_TIMEOUT){
 
-  	/* set the wakeup time */
-  	TimerDuration curtime = bios_clock();
-  	tcb->wakeup_time = (timeout==NO_TIMEOUT) ? NO_TIMEOUT : curtime+timeout;
+    /* set the wakeup time */
+    TimerDuration curtime = bios_clock();
+    tcb->wakeup_time = (timeout==NO_TIMEOUT) ? NO_TIMEOUT : curtime+timeout;
 
-  	/* add to the TIMEOUT_LIST in sorted order */
-  	rlnode* n = TIMEOUT_LIST.next;
-  	for( ; n!=&TIMEOUT_LIST; n=n->next) 
-  		/* skip earlier entries */
-  		if(tcb->wakeup_time < n->tcb->wakeup_time) break;
-  	/* insert before n */
-	rl_splice(n->prev, & tcb->sched_node);
+    /* add to the TIMEOUT_LIST in sorted order */
+    rlnode* n = TIMEOUT_LIST.next;
+    for( ; n!=&TIMEOUT_LIST; n=n->next) 
+      /* skip earlier entries */
+      if(tcb->wakeup_time < n->tcb->wakeup_time) break;
+    /* insert before n */
+  rl_splice(n->prev, & tcb->sched_node);
   }
 }
 
@@ -250,8 +260,8 @@ static void sched_register_timeout(TCB* tcb, TimerDuration timeout)
 */
 static void sched_queue_add(TCB* tcb)
 {
-  /* Insert at the end of the scheduling list */
-  rlist_push_back(& SCHED, & tcb->sched_node);
+  /* Insert at the end of the CORRECT scheduling list */ 
+  rlist_push_back(& SCHED[tcb->priority], & tcb->sched_node);   
 
   /* Restart possibly halted cores */
   cpu_core_restart_one();
@@ -259,28 +269,28 @@ static void sched_queue_add(TCB* tcb)
 
 
 /*
-	Adjust the state of a thread to make it READY.
+  Adjust the state of a thread to make it READY.
 
-    *** MUST BE CALLED WITH sched_spinlock HELD ***	
+    *** MUST BE CALLED WITH sched_spinlock HELD *** 
  */
 static void sched_make_ready(TCB* tcb)
 {
-	assert(tcb->state == STOPPED || tcb->state == INIT);
+  assert(tcb->state == STOPPED || tcb->state == INIT);
 
-	/* Possibly remove from TIMEOUT_LIST */
-	if(tcb->wakeup_time != NO_TIMEOUT) {
-		/* tcb is in TIMEOUT_LIST, fix it */
-		assert(tcb->sched_node.next != &(tcb->sched_node) && tcb->state == STOPPED);
-		rlist_remove(& tcb->sched_node);
-		tcb->wakeup_time = NO_TIMEOUT;
-	}
+  /* Possibly remove from TIMEOUT_LIST */
+  if(tcb->wakeup_time != NO_TIMEOUT) {
+    /* tcb is in TIMEOUT_LIST, fix it */
+    assert(tcb->sched_node.next != &(tcb->sched_node) && tcb->state == STOPPED);
+    rlist_remove(& tcb->sched_node);
+    tcb->wakeup_time = NO_TIMEOUT;
+  }
 
-	/* Mark as ready */
-	tcb->state = READY;
+  /* Mark as ready */
+  tcb->state = READY;
 
-	/* Possibly add to the scheduler queue */
-	if(tcb->phase == CTX_CLEAN) 
-		sched_queue_add(tcb);
+  /* Possibly add to the scheduler queue */
+  if(tcb->phase == CTX_CLEAN) 
+    sched_queue_add(tcb);
 }
 
 
@@ -292,21 +302,71 @@ static void sched_make_ready(TCB* tcb)
 */
 static TCB* sched_queue_select()
 {
+  rlnode * sel;
+  int i;
 
   /* Empty the timeout list up to the current time and wake up each thread */
   TimerDuration curtime = bios_clock();
   while(! is_rlist_empty(&TIMEOUT_LIST)) {
-  		TCB* tcb = TIMEOUT_LIST.next->tcb;
-  		if(tcb->wakeup_time > curtime)
-  			break;
-  		sched_make_ready(tcb);
+      TCB* tcb = TIMEOUT_LIST.next->tcb;
+      if(tcb->wakeup_time > curtime)
+        break;
+      sched_make_ready(tcb);
   }
 
-  /* Get the head of the SCHED list */
-  rlnode * sel = rlist_pop_front(& SCHED);
+  /* search all the lists from top to bottom and break when a thread is found. */
+  for(i = TOP_PRIORITY; i >= LOWEST_PRIORITY; i--){
+    sel = rlist_pop_front(& SCHED[i]);
+    if (sel != NULL)
+      break;
+  }
 
-  return sel->tcb;  /* When the list is empty, this is NULL */
-} 
+  /* No thread is found or it was in the last list. Congestion drops. */
+  if(i <= LOWEST_PRIORITY)
+    counter_congestion--;
+  else{
+    /* A thread is found somewhere else. Check if the next lists have threads. 
+       If ready threads exists congestion grows. Else it drops. */
+    for (i--; i >= LOWEST_PRIORITY; i--){
+      if(! is_rlist_empty(& SCHED[i])){
+        counter_congestion++;
+        break;
+      }else if (i == LOWEST_PRIORITY){
+        counter_congestion--;
+        break;
+      }
+    }
+  }
+  
+  /* Counter must not get too low. */
+  if (counter_congestion < 0) 
+    counter_congestion = 0;
+
+  fail_safe++;
+
+  /* Boost when needed. */
+  if (counter_congestion >= MAX_CONGESTION || fail_safe == 500)
+    boost();
+
+  /* When all lists are empty, this is NULL */
+  return sel->tcb;
+}
+
+
+void boost()
+{
+  counter_congestion = 0;
+  rlnode * sel;
+  /* Push all the threads one priority up.
+     Start from the second list. */
+  for(int i = TOP_PRIORITY - 1; i >= LOWEST_PRIORITY; i--){
+    while (! is_rlist_empty(& SCHED[i])){
+      sel = rlist_pop_front(& SCHED[i]);
+      sel->tcb->priority++;
+      rlist_push_back(& SCHED[i+1], sel);
+    }
+  }
+}
 
 
 /*
@@ -314,26 +374,25 @@ static TCB* sched_queue_select()
  */
 int wakeup(TCB* tcb)
 {
-	int ret = 0;
+  int ret = 0;
 
-	/* Preemption off */
-	int oldpre = preempt_off;
+  /* Preemption off */
+  int oldpre = preempt_off;
 
-	/* To touch tcb->state, we must get the spinlock. */
-	Mutex_Lock(& sched_spinlock);
+  /* To touch tcb->state, we must get the spinlock. */
+  Mutex_Lock(& sched_spinlock);
 
-	if(tcb->state==STOPPED || tcb->state==INIT) {
-		sched_make_ready(tcb);
-		ret = 1;		
-	}
+  if(tcb->state==STOPPED || tcb->state==INIT) {
+    sched_make_ready(tcb);
+    ret = 1;    
+  }
 
+  Mutex_Unlock(& sched_spinlock);
 
-	Mutex_Unlock(& sched_spinlock);
+  /* Restore preemption state */
+  if(oldpre) preempt_on;
 
-	/* Restore preemption state */
-	if(oldpre) preempt_on;
-
-	return ret;
+  return ret;
 }
 
 
@@ -359,7 +418,7 @@ void sleep_releasing(Thread_state state, Mutex* mx, enum SCHED_CAUSE cause, Time
 
   /* register the timeout (if any) for the sleeping thread */
   if(state!=EXITED) 
-  	sched_register_timeout(tcb, timeout);
+    sched_register_timeout(tcb, timeout);
 
   /* Release mx */
   if(mx!=NULL) Mutex_Unlock(mx);
@@ -376,7 +435,6 @@ void sleep_releasing(Thread_state state, Mutex* mx, enum SCHED_CAUSE cause, Time
 
 
 /* This function is the entry point to the scheduler's context switching */
-
 void yield(enum SCHED_CAUSE cause)
 { 
   /* Reset the timer, so that we are not interrupted by ALARM */
@@ -390,6 +448,45 @@ void yield(enum SCHED_CAUSE cause)
   int current_ready = 0;
 
   Mutex_Lock(& sched_spinlock);
+
+  /* Change priority according the cause */
+  switch(cause) 
+  {
+    case SCHED_QUANTUM: /* End of quantum. Lower priority */
+      current->priority--;
+      break;
+    case SCHED_IO: /* IO interrupt. Raise priority. */
+      current->priority++;
+      break;
+    case SCHED_MUTEX:
+
+      /* Save the priority before the first SCHED_MUTEX. */
+      if(current->mutex_flag == 0)
+        current->prev_queue = current->priority;
+      
+      current->priority = LOWEST_PRIORITY;
+      /* Flags that the priority has changed because of a mutex. */
+      current->mutex_flag = 1;
+      break;
+    case SCHED_PIPE:
+    case SCHED_POLL:
+    case SCHED_IDLE:
+    case SCHED_USER:
+      break;
+  }
+
+  /* Check if priority is out of bounds and fix it. */
+  if(current->priority < LOWEST_PRIORITY)
+    current->priority = LOWEST_PRIORITY;
+  else if(current->priority >TOP_PRIORITY)
+    current->priority = TOP_PRIORITY;
+
+  /* Reinstate priority after the MUTEX lock has been solved. */
+  if (current->mutex_flag == 1 && cause != SCHED_MUTEX){
+    current->mutex_flag = 0;
+    current->priority = current->prev_queue;
+  }
+
   switch(current->state)
   {
     case RUNNING:
@@ -419,7 +516,7 @@ void yield(enum SCHED_CAUSE cause)
   }
 
   /* ok, link the current and next TCB, for the gain phase */
-  current->next = next;
+  current->next = next; 
   next->prev = current;
 
   Mutex_Unlock(& sched_spinlock);
@@ -448,8 +545,7 @@ void yield(enum SCHED_CAUSE cause)
   domain (e.g., waiting at some driver), we need to not turn preemption
   on!
 */
-
-void gain(int preempt)
+void gain(int preempt) 
 {
   Mutex_Lock(& sched_spinlock);
 
@@ -461,15 +557,20 @@ void gain(int preempt)
   current->phase = CTX_DIRTY;
 
   if(current != prev) {
-  	/* Take care of the previous thread */
+    /* Take care of the previous thread */
     prev->phase = CTX_CLEAN;
     switch(prev->state) 
     {
       case READY:
         if(prev->type != IDLE_THREAD) sched_queue_add(prev);
         break;
-      case EXITED:
-      	release_TCB(prev);
+      case EXITED: 
+        //tsekaroyme oti den einai to main thread.
+        if(prev->owner_ptcb != NULL) {
+          // To thread pe8ane kai prepei na to kseroun auta pou to perimenoun.
+          prev->owner_ptcb->thread_exited = 1; 
+        }
+        release_TCB(prev);
         break;
       case STOPPED:
         break;
@@ -484,7 +585,7 @@ void gain(int preempt)
   if(preempt) preempt_on;
 
   /* Set a 1-quantum alarm */
-  bios_set_timer(QUANTUM);
+  bios_set_timer(QUANTUM / (current->priority + 1));
 }
 
 
@@ -510,10 +611,13 @@ static void idle_thread()
  */
 void initialize_scheduler()
 {
-  rlnode_init(&SCHED, NULL);
-  rlnode_init(&TIMEOUT_LIST, NULL);
-}
+  /* init scheduler's lists*/
+  for(int i = 0; i < PRIORITY_LISTS; i ++)
+    rlnode_init(&SCHED[i], NULL);
 
+  rlnode_init(&TIMEOUT_LIST, NULL);
+
+}
 
 
 void run_scheduler()
@@ -530,6 +634,16 @@ void run_scheduler()
   curcore->idle_thread.state = RUNNING;
   curcore->idle_thread.phase = CTX_DIRTY;
   curcore->idle_thread.wakeup_time = NO_TIMEOUT;
+
+  curcore->idle_thread.priority = TOP_PRIORITY;
+  curcore->idle_thread.mutex_flag = 0;
+  curcore->idle_thread.prev_queue = TOP_PRIORITY;
+
+  /* Den 8eloume na afisoume metablhtes xwris initialization */
+  curcore->idle_thread.owner_ptcb = NULL;
+  curcore->idle_thread.prev_queue = TOP_PRIORITY;
+  curcore->idle_thread.mutex_flag = 0;
+
   rlnode_init(& curcore->idle_thread.sched_node, & curcore->idle_thread);
 
   /* Initialize interrupt handler */
@@ -545,5 +659,3 @@ void run_scheduler()
   cpu_interrupt_handler(ALARM, NULL);
   cpu_interrupt_handler(ICI, NULL);
 }
-
-

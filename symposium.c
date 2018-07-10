@@ -219,7 +219,6 @@ int SymposiumOfThreads(int argl, void* args)
 	for(int i=0;i<N;i++) {
 		thread[i] = CreateThread(PhilosopherThread, i, &S);
 	}  
-
 	/* Wait for philosophers to exit */  
 	for(int i=0;i<N;i++) {
 		ThreadJoin(thread[i],NULL);
