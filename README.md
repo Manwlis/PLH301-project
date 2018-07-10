@@ -1,3 +1,4 @@
+Unuversity project on operating systems. Forked from vsamtuc. Changed the scheduler to a priority lists one. Added threads, pipes, sockets and a process that shows info about running processes.
 
 # TinyOS v.3
 
@@ -50,4 +51,6 @@ standard packages `doxygen` and `valgrind` with their dependencies (e.g., `graph
 for anything serious, as well as the GDB debugger.
 
 
+### Bugs
 
+2-3% of the sockets fail to connect.
