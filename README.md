@@ -51,4 +51,6 @@ standard packages `doxygen` and `valgrind` with their dependencies (e.g., `graph
 for anything serious, as well as the GDB debugger.
 
 
+### Bugs
 
+2-3% of the sockets fail to connect.
